@@ -101,9 +101,11 @@ Implementations of metadata agents, starting with:
 
 Component that:
 
-- Validates plugin permissions against configuration
-- Enforces per-plugin restrictions on host functions
-- Manages plugin-specific configurations
+- Validates plugin manifests against administrator-defined security policies
+- Controls which host functions each plugin can access
+- Enforces URL-specific HTTP access restrictions
+- Manages data access permissions (configuration, user preferences)
+- Provides runtime security checks during plugin execution
 
 ### 2.3 Data Flow
 
