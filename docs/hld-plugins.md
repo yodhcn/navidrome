@@ -113,30 +113,31 @@ The following diagram illustrates the interaction between Navidrome Core and Plu
 
 ```mermaid
 sequenceDiagram
-    participant Core as Navidrome Core
+    participant PM as Plugin Manager
+    participant HB as Host Bridge
     participant PermMgr as Permission Manager
     participant Plugin as Plugin (e.g., Last.fm)
     participant External as External API
 
-    Note over Core,Plugin: Metadata Request Flow
-    Core->>Plugin: Request artist/album metadata
+    Note over PM,Plugin: Metadata Request Flow
+    PM->>Plugin: Request artist/album metadata
 
-    Note over Plugin,Core: Configuration Access
-    Plugin->>Core: Request configuration (API keys)
-    Core->>PermMgr: Verify permission to access config
-    PermMgr->>Core: Grant permission (if allowed)
-    Core->>Plugin: Return configuration
+    Note over Plugin,HB: Configuration Access
+    Plugin->>HB: Request configuration (API keys)
+    HB->>PermMgr: Verify permission to access config
+    PermMgr->>HB: Grant permission (if allowed)
+    HB->>Plugin: Return configuration
 
     Note over Plugin,External: External API Access
-    Plugin->>Core: Request HTTP call to external API
-    Core->>PermMgr: Verify HTTP permission
-    PermMgr->>Core: Grant permission (if method allowed)
-    Core->>External: Forward HTTP request
-    External->>Core: Return API response data
-    Core->>Plugin: Forward API response
+    Plugin->>HB: Request HTTP call to external API
+    HB->>PermMgr: Verify HTTP permission
+    PermMgr->>HB: Grant permission (if method allowed)
+    HB->>External: Forward HTTP request
+    External->>HB: Return API response data
+    HB->>Plugin: Forward API response
 
-    Note over Plugin,Core: Result Return
-    Plugin->>Core: Return processed metadata
+    Note over Plugin,PM: Result Return
+    Plugin->>PM: Return processed metadata
 ```
 
 ## 3. Technical Design
