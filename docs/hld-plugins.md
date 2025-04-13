@@ -109,7 +109,7 @@ Component that:
 
 ### 2.3 Data Flow
 
-The following diagram illustrates the interaction between Navidrome Core and Plugins for a typical metadata request:
+The following diagram illustrates the interaction between components in two key phases: plugin initialization and metadata request handling:
 
 ```mermaid
 sequenceDiagram
@@ -119,16 +119,19 @@ sequenceDiagram
     participant Plugin as Plugin (e.g., Last.fm)
     participant External as External API
 
-    Note over PM,Plugin: Metadata Request Flow
+    Note over PM,Plugin: Plugin Initialization Phase
+    PM->>PM: Read plugin manifest
+    PM->>PermMgr: Verify plugin permissions
+    PermMgr->>PM: Confirm permissions
+    PM->>PM: Prepare plugin config
+    PM->>Plugin: Load plugin
+    PM->>Plugin: Init(config)
+    Plugin->>Plugin: Process configuration
+    PM->>Plugin: Register capabilities
+
+    Note over PM,External: Metadata Request Phase (Runtime)
     PM->>Plugin: Request artist/album metadata
 
-    Note over Plugin,HB: Configuration Access
-    Plugin->>HB: Request configuration (API keys)
-    HB->>PermMgr: Verify permission to access config
-    PermMgr->>HB: Grant permission (if allowed)
-    HB->>Plugin: Return configuration
-
-    Note over Plugin,External: External API Access
     Plugin->>HB: Request HTTP call to external API
     HB->>PermMgr: Verify HTTP permission
     PermMgr->>HB: Grant permission (if method allowed)
@@ -136,9 +139,12 @@ sequenceDiagram
     External->>HB: Return API response data
     HB->>Plugin: Forward API response
 
-    Note over Plugin,PM: Result Return
     Plugin->>PM: Return processed metadata
 ```
+
+During initialization, the Plugin Manager reads the plugin manifest, verifies permissions, prepares the appropriate configuration, and passes it directly to the plugin's Init() method. This ensures the plugin has all necessary configuration before any operations are performed, and eliminates unnecessary RPC calls.
+
+At runtime, plugins handle metadata requests by making external API calls as needed through the Host Bridge, which still performs permission checks for each request.
 
 ## 3. Technical Design
 
@@ -230,7 +236,7 @@ message HttpDoResponse {
 
 Each plugin must include a manifest file (`manifest.json`) that declares its capabilities and required permissions:
 
-```json
+```jsonc
 {
   "name": "lastfm",
   "version": "1.0.0",
@@ -289,9 +295,30 @@ type Manager struct {
 }
 
 func (m *Manager) Initialize(ctx context.Context) error {
-    // Initialize plugins directory and load available plugins
+    // Initialize plugins directory and scan for available plugins
     // Read plugin manifests
-    // Register with permission manager
+    // Verify permissions with permission manager
+    // Load and initialize each plugin with its configuration
+    // Register plugin capabilities
+}
+
+func (m *Manager) LoadPlugin(manifest *PluginManifest) error {
+    // Check if plugin is enabled in configuration
+    // Load plugin from WASM file
+
+    // Prepare plugin configuration
+    config := m.preparePluginConfig(manifest.Name)
+
+    // Initialize plugin with configuration
+    err := plugin.Init(config)
+    if err != nil {
+        return fmt.Errorf("failed to initialize plugin: %w", err)
+    }
+
+    // Register plugin capabilities
+    m.registerPluginCapabilities(manifest.Name, plugin)
+
+    return nil
 }
 
 func (m *Manager) GetAgentPlugin(name string) agents.Interface {
@@ -300,6 +327,12 @@ func (m *Manager) GetAgentPlugin(name string) agents.Interface {
 
 func (m *Manager) LoadPluginManifest(path string) (*PluginManifest, error) {
     // Read and parse manifest.json from plugin directory
+}
+
+func (m *Manager) preparePluginConfig(pluginName string) map[string]interface{} {
+    // Get plugin-specific configuration from Navidrome config
+    // Filter out any sensitive fields plugin shouldn't access
+    // Return prepared configuration map
 }
 ```
 
@@ -329,7 +362,7 @@ func (p *PermissionManager) GetPluginConfig(pluginName string) map[string]interf
 
 ### 3.5 Host Functions Implementation
 
-Host functions provide plugins with access to Navidrome services:
+Host functions provide plugins with access to Navidrome services. Even though configuration is passed during initialization, plugins might still need to access some configuration values at runtime:
 
 ```go
 // plugins/host_functions.go
@@ -355,7 +388,9 @@ func (h *HostFunctions) GetConfig(ctx context.Context, req proto.GetConfigReques
     if !h.permManager.IsHostFunctionAllowed(h.pluginContext.Name, "GetConfig") {
         return proto.GetConfigResponse{}, errors.New("permission denied")
     }
-    // Retrieve configuration safely
+
+    // Used for dynamic configuration access during runtime, not for initial setup
+    // Retrieve configuration safely, respecting permission boundaries
 }
 
 func (h *HostFunctions) HttpDo(ctx context.Context, req proto.HttpDoRequest) (proto.HttpDoResponse, error) {
