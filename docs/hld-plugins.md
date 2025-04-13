@@ -597,6 +597,172 @@ AllowRedirects = true
 "*" = ["*"]                                  # Unrestricted access to any URL with any method
 ```
 
+### 3.7 Integration with Existing Agent System
+
+The plugin system will integrate with the existing agent architecture by adapting loaded plugins to conform to the current agent interface model. This approach allows for immediate plugin functionality without requiring major refactoring of the core codebase.
+
+#### 3.7.1 Plugin to Agent Adaptation
+
+When an agent plugin is loaded, the Plugin Manager will create an adapter that implements the appropriate agent interfaces, then register it with the existing agent system:
+
+```go
+// Example adapter for agent plugins
+type PluginAgentAdapter struct {
+    plugin     *AgentPlugin
+    pluginName string
+    ds         model.DataStore
+}
+
+func (a *PluginAgentAdapter) AgentName() string {
+    return a.pluginName
+}
+
+// Implement the agents.Interface interface
+func (a *PluginAgentAdapter) GetSimilarArtists(ctx context.Context, id, name, mbid string, limit int) ([]agents.Artist, error) {
+    // Convert to protobuf request
+    req := &proto.GetSimilarArtistsRequest{
+        Id:    id,
+        Name:  name,
+        Mbid:  mbid,
+        Limit: int32(limit),
+    }
+
+    // Call plugin
+    resp, err := a.plugin.GetSimilarArtists(ctx, req)
+    if err != nil {
+        return nil, err
+    }
+
+    // Convert protobuf response to agent interface
+    artists := make([]agents.Artist, len(resp.Artists))
+    for i, artist := range resp.Artists {
+        artists[i] = agents.Artist{
+            Name: artist.Name,
+            Mbid: artist.Mbid,
+        }
+    }
+
+    return artists, nil
+}
+
+// Implement other interfaces (ArtistMBIDRetriever, ArtistURLRetriever, etc.) similarly
+```
+
+The following diagram illustrates how the plugin system integrates with the existing agent architecture:
+
+```mermaid
+flowchart TD
+    classDef core fill:#3a5e8c,stroke:#66ccff,color:#ffffff
+    classDef plugin fill:#8c5e3a,stroke:#ffcc66,color:#ffffff
+    classDef adapter fill:#5e8c3a,stroke:#66ff66,color:#ffffff
+
+    subgraph PluginSystem["Plugin System"]
+        PluginMgr["Plugin Manager"]:::core
+        Plugin1["Last.fm Plugin"]:::plugin
+        Plugin2["Spotify Plugin"]:::plugin
+        Plugin3["Custom Plugin"]:::plugin
+
+        Adapter1["Last.fm
+Plugin Adapter"]:::adapter
+        Adapter2["Spotify
+Plugin Adapter"]:::adapter
+        Adapter3["Custom
+Plugin Adapter"]:::adapter
+
+        PluginMgr -->|"Loads"| Plugin1
+        PluginMgr -->|"Loads"| Plugin2
+        PluginMgr -->|"Loads"| Plugin3
+
+        Plugin1 -->|"Wrapped by"| Adapter1
+        Plugin2 -->|"Wrapped by"| Adapter2
+        Plugin3 -->|"Wrapped by"| Adapter3
+    end
+
+    subgraph ExistingSystem["Existing Agent System"]
+        AgentRegistry["Agent Registry
+(Map variable)"]:::core
+        MetaAgent["Meta Agent
+(agents.Agents)"]:::core
+        BuiltIn1["Built-in Agent 1"]:::core
+        BuiltIn2["Built-in Agent 2"]:::core
+
+        AgentRegistry -->|"Creates"| MetaAgent
+        AgentRegistry -->|"Registers"| BuiltIn1
+        AgentRegistry -->|"Registers"| BuiltIn2
+    end
+
+    Adapter1 -->|"Registered with"| AgentRegistry
+    Adapter2 -->|"Registered with"| AgentRegistry
+    Adapter3 -->|"Registered with"| AgentRegistry
+
+    MetaAgent -->|"Calls in priority order"| BuiltIn1
+    MetaAgent -->|"Calls in priority order"| BuiltIn2
+    MetaAgent -->|"Calls in priority order"| Adapter1
+    MetaAgent -->|"Calls in priority order"| Adapter2
+    MetaAgent -->|"Calls in priority order"| Adapter3
+
+    External["External
+Metadata
+Requests"]:::core
+
+    External -->|"GetSimilarArtists
+GetArtistBiography
+etc."| MetaAgent
+```
+
+The diagram shows how:
+
+1. The Plugin Manager loads WebAssembly plugins
+2. Each plugin is wrapped by an adapter that implements the agent interfaces
+3. Adapters are registered with the existing Agent Registry
+4. The Meta Agent (agents.Agents) calls all agents, including plugin adapters, in priority order
+5. External metadata requests flow through the Meta Agent to all registered agents
+
+#### 3.7.2 Plugin Registration
+
+The Plugin Manager will register the plugin adapter with the existing agent system:
+
+```go
+func (m *Manager) registerAgentPlugin(plugin *AgentPlugin, manifest *PluginManifest) {
+    // Create adapter
+    adapter := &PluginAgentAdapter{
+        plugin:     plugin,
+        pluginName: manifest.Name,
+        ds:         m.ds,
+    }
+
+    // Register with the agent system
+    agents.Register(manifest.Name, func(ds model.DataStore) agents.Interface {
+        return adapter
+    })
+
+    // Store in plugin manager for direct access if needed
+    m.agentPlugins[manifest.Name] = plugin
+}
+```
+
+#### 3.7.3 Agent Prioritization
+
+The existing configuration system for agent ordering will be maintained, allowing administrators to specify the priority of both built-in agents and plugin agents:
+
+```toml
+# Example navidrome.toml configuration
+[Server]
+# Comma-separated list of agent names in order of preference
+Agents = "spotify,lastfm,custom-plugin"
+```
+
+#### 3.7.4 Future Evolution
+
+While the initial implementation will adapt plugins to the existing agent architecture, a future refactoring may introduce a more plugin-oriented Registry-Based Approach. This would involve:
+
+1. Creating a centralized registry for metadata providers
+2. Explicit capability declaration for each provider
+3. More granular configuration of provider priorities per capability
+4. A common interface for both built-in and plugin providers
+
+This future evolution would provide better organization and extension capabilities while maintaining backward compatibility through the transition period.
+
 ## 4. Security Considerations
 
 ### 4.1 Plugin Sandbox
