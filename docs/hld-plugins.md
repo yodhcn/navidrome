@@ -892,4 +892,40 @@ A typical development workflow:
 5. Repeat steps 3-4 until implementation is complete
 6. Package as `.ndp` file for distribution
 
+### 5.6 Plugin Directory Structure
+
+Plugins are stored in a dedicated plugins directory, which by default is a subdirectory of Navidrome's data folder:
+
+```
+<DataFolder>/plugins/
+├── lastfm/               # Each plugin has its own subdirectory
+│   ├── plugin.wasm       # The WebAssembly binary
+│   ├── manifest.json     # The plugin manifest
+│   └── README.md         # Optional documentation
+├── spotify/
+│   ├── plugin.wasm
+│   ├── manifest.json
+│   └── README.md
+└── other-plugin/
+    ├── plugin.wasm
+    ├── manifest.json
+    └── README.md
+```
+
+The plugins directory location can be configured in `navidrome.toml`:
+
+```toml
+[Plugins]
+Enabled = true
+Directory = "${DataFolder}/plugins"  # Default, can be overridden
+```
+
+When Navidrome starts, it scans this directory for subdirectories containing WASM files and manifests, loads the plugins, and registers them with the appropriate subsystems based on their declared capabilities.
+
+For development purposes, the `plugin dev` command can create a symlink to a development directory outside of the standard plugins directory, allowing developers to work on plugin files without having to manually copy them after each change.
+
 ## 6. Implementation Plan
+
+```
+
+```
