@@ -1,5 +1,38 @@
 # High-Level Design: Navidrome Plugin System
 
+## Table of Contents
+
+- [1. Introduction](#1-introduction)
+  - [1.1 Purpose](#11-purpose)
+  - [1.2 Scope](#12-scope)
+  - [1.3 Definitions and Acronyms](#13-definitions-and-acronyms)
+- [2. System Architecture](#2-system-architecture)
+  - [2.1 Architectural Overview](#21-architectural-overview)
+  - [2.2 Component Description](#22-component-description)
+  - [2.3 Data Flow](#23-data-flow)
+- [3. Technical Design](#3-technical-design)
+  - [3.1 Protocol Buffer Definitions](#31-protocol-buffer-definitions)
+  - [3.2 Plugin Manifest](#32-plugin-manifest)
+  - [3.3 Plugin Manager Implementation](#33-plugin-manager-implementation)
+  - [3.4 Permission Manager Implementation](#34-permission-manager-implementation)
+  - [3.5 Host Functions Implementation](#35-host-functions-implementation)
+  - [3.6 Configuration Structure](#36-configuration-structure)
+  - [3.7 Integration with Existing Agent System](#37-integration-with-existing-agent-system)
+- [4. Security Considerations](#4-security-considerations)
+  - [4.1 Plugin Sandbox](#41-plugin-sandbox)
+  - [4.2 Granular Permission Control](#42-granular-permission-control)
+  - [4.3 Configuration Access Control](#43-configuration-access-control)
+  - [4.4 User Data Protection](#44-user-data-protection)
+  - [4.5 HTTP Security](#45-http-security)
+- [5. Development and Deployment](#5-development-and-deployment)
+  - [5.1 Plugin Development Workflow](#51-plugin-development-workflow)
+  - [5.2 CLI Commands for Plugin Management](#52-cli-commands-for-plugin-management)
+  - [5.3 Plugin Installation Flow](#53-plugin-installation-flow)
+  - [5.4 Plugin Distribution and Packaging](#54-plugin-distribution-and-packaging)
+  - [5.5 Plugin Development Workflow](#55-plugin-development-workflow)
+  - [5.6 Plugin Directory Structure](#56-plugin-directory-structure)
+- [6. Implementation Plan](#6-implementation-plan)
+
 ## 1. Introduction
 
 ### 1.1 Purpose
