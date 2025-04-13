@@ -24,6 +24,7 @@
   - [4.3 Configuration Access Control](#43-configuration-access-control)
   - [4.4 User Data Protection](#44-user-data-protection)
   - [4.5 HTTP Security](#45-http-security)
+  - [4.6 Plugin Verification](#46-plugin-verification)
 - [5. Development and Deployment](#5-development-and-deployment)
   - [5.1 Plugin Development Workflow](#51-plugin-development-workflow)
   - [5.2 CLI Commands for Plugin Management](#52-cli-commands-for-plugin-management)
@@ -32,6 +33,7 @@
   - [5.5 Plugin Development Workflow](#55-plugin-development-workflow)
   - [5.6 Plugin Directory Structure](#56-plugin-directory-structure)
 - [6. Implementation Plan](#6-implementation-plan)
+- [7. Future Extensions](#7-future-extensions)
 
 ## 1. Introduction
 
@@ -284,7 +286,19 @@ Each plugin must include a manifest file (`manifest.json`) that declares its cap
       "https://*.last.fm": ["GET"], // GET requests to any last.fm subdomain
       "*": ["GET"] // GET requests to any URL (use with caution)
     },
-    "allowRedirects": true
+    "allowRedirects": true,
+    "allowLocalNetwork": false // New: default to false, must be explicitly enabled
+  },
+  "capabilities": {
+    "agent": {
+      "GetArtistMBID": true,
+      "GetArtistURL": true,
+      "GetArtistBiography": true,
+      "GetSimilarArtists": true,
+      "GetArtistImages": true,
+      "GetArtistTopSongs": true,
+      "GetAlbumInfo": true
+    }
   },
   "configurationOptions": [
     { "name": "ApiKey", "required": true, "description": "Last.fm API key" },
@@ -308,6 +322,8 @@ The manifest structure includes:
   - Domain pattern wildcards (e.g., `"https://*.domain.com"`)
   - Full wildcard `"*": ["*"]` for unrestricted access (should be used with caution)
 - Whether redirects are allowed to be followed
+- A flag to allow local network access (`allowLocalNetwork`) which is disabled by default for security
+- Capabilities the plugin supports, allowing it to declare which functions it implements
 - Configuration options the plugin needs to function
 
 ### 3.3 Plugin Manager Implementation
@@ -413,7 +429,23 @@ func (h *HostFunctions) GetUserPreference(ctx context.Context, req proto.GetUser
     if !h.permManager.IsHostFunctionAllowed(h.pluginContext.Name, "GetUserPreference") {
         return proto.GetUserPreferenceResponse{}, errors.New("permission denied")
     }
-    // Retrieve user preference from datastore
+
+    // Scope the preference key with plugin name to prevent collisions
+    scopedKey := fmt.Sprintf("%s:%s", h.pluginContext.Name, req.Key)
+
+    // Retrieve user preference from datastore using scoped key
+}
+
+func (h *HostFunctions) SetUserPreference(ctx context.Context, req proto.SetUserPreferenceRequest) (proto.SetUserPreferenceResponse, error) {
+    // Check permission
+    if !h.permManager.IsHostFunctionAllowed(h.pluginContext.Name, "SetUserPreference") {
+        return proto.SetUserPreferenceResponse{}, errors.New("permission denied")
+    }
+
+    // Scope the preference key with plugin name to prevent collisions
+    scopedKey := fmt.Sprintf("%s:%s", h.pluginContext.Name, req.Key)
+
+    // Set user preference in datastore using scoped key
 }
 
 func (h *HostFunctions) GetConfig(ctx context.Context, req proto.GetConfigRequest) (proto.GetConfigResponse, error) {
@@ -438,8 +470,8 @@ func (h *HostFunctions) HttpDo(ctx context.Context, req proto.HttpDoRequest) (pr
         return proto.HttpDoResponse{}, fmt.Errorf("invalid URL: %v", err)
     }
 
-    // Block internal network addresses by default
-    if isInternalAddress(parsedURL.Host) {
+    // Check if requesting access to local network and if it's allowed
+    if isInternalAddress(parsedURL.Host) && !h.permManager.IsLocalNetworkAllowed(h.pluginContext.Name) {
         return proto.HttpDoResponse{}, errors.New("access to internal network addresses is forbidden")
     }
 
@@ -829,11 +861,35 @@ Plugins will run in a WebAssembly sandbox with limited capabilities:
 
 - All HTTP requests from plugins are mediated through the unified HttpDo interface
 - URLs are restricted to an explicit allowlist with specific HTTP methods allowed per URL
-- Internal network addresses (private IP ranges, localhost) are explicitly blocked
+- Internal network addresses (private IP ranges, localhost) are explicitly blocked by default
+- Plugins that need local network access must explicitly request it via the `allowLocalNetwork` flag in their manifest
 - Redirects require explicit permission to prevent URL allowlist bypass
 - URL validation prevents access to internal/restricted networks
 - Rate limiting prevents abuse of external services
 - Response size limits prevent memory exhaustion
+
+### 4.6 Plugin Verification
+
+The Plugin Manager verifies the integrity of plugins upon loading:
+
+```go
+func (m *Manager) VerifyPluginIntegrity(pluginPath string, expectedHash string) (bool, error) {
+    // Calculate SHA-256 hash of plugin file
+    fileData, err := ioutil.ReadFile(pluginPath)
+    if err != nil {
+        return false, fmt.Errorf("failed to read plugin file: %w", err)
+    }
+
+    actualHash := sha256.Sum256(fileData)
+    actualHashStr := hex.EncodeToString(actualHash[:])
+
+    return actualHashStr == expectedHash, nil
+}
+```
+
+During plugin installation, the hash is calculated and stored locally. When the plugin is loaded, its integrity is verified by comparing the current hash with the stored hash. This ensures that the plugin binary has not been modified since installation.
+
+Future versions may integrate with a plugin registry service for automated verification and updates.
 
 ## 5. Development and Deployment
 
@@ -959,6 +1015,23 @@ For development purposes, the `plugin dev` command can create a symlink to a dev
 
 ## 6. Implementation Plan
 
-```
+The implementation plan is detailed in a separate document: [plugins-implementation-plan.md](plugins-implementation-plan.md)
 
-```
+## 7. Future Extensions
+
+The initial implementation of the plugin system focuses on metadata agents. Future versions may extend support to additional plugin types:
+
+1. **ExternalMetadata Plugins**: Provide lyrics, extended artist and album information
+2. **Scrobbler Plugins**: Send play history to various music services
+3. **Playlist Generator Plugins**: Create smart playlists based on various criteria
+4. **Storage Plugins**: Support for cloud storage providers (S3, etc.)
+5. **External Player Plugins**: Integration with Sonos, DLNA, and the Jukebox feature
+6. **Podcast Plugins**: Implementation of Podcast support
+
+Additional planned enhancements:
+
+- Enhanced URL pattern matching with path support
+- Standardized UI for plugin configuration
+- Plugin testing harness for developers
+- Plugin registry and update mechanism
+- Support for additional protocols beyond HTTP

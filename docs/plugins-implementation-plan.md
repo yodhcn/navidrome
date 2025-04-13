@@ -7,7 +7,11 @@
 - [ ] 1.1: Plugin Manifest and Configuration
 - [ ] 1.2: Basic WebAssembly Runtime Integration
 - [ ] 1.3: Permission Management System
+  - [ ] 1.3.1: URL Allowlist Implementation
+  - [ ] 1.3.2: Local Network Access Control
+  - [ ] 1.3.3: Host Function Access Control
 - [ ] 1.4: Project Structure and CLI Commands
+- [ ] 1.5: Plugin Verification System
 
 ### Phase 2: Protocol Definition and Host Functions
 
@@ -71,6 +75,11 @@
   - Internal network access prevention
   - Configuration access control
 - Add comprehensive security tests for all permission rules
+- Implement local network access control feature:
+  - Add `allowLocalNetwork` flag to manifest schema
+  - Update permission checks in HTTP requests
+  - Add configuration option for default behavior
+- Add tests for local network access control
 
 ### 1.4: Project Structure and CLI Commands
 
@@ -87,7 +96,16 @@
   - `navidrome plugin list`
   - `navidrome plugin info [name]`
 
-**Deliverable:** Foundation layer that discovers plugins and validates permissions without executing any plugin code.
+### 1.5: Plugin Verification System
+
+- Implement plugin binary integrity verification:
+  - Add hash calculation and storage during installation
+  - Add verification during plugin loading
+  - Create a local store for plugin hashes
+- Add tests for plugin verification workflow
+- Update CLI commands to display verification status
+
+**Deliverable:** Foundation layer with security features including local network control and plugin verification.
 
 ## Phase 2: Protocol Definition and Host Functions
 
@@ -136,6 +154,8 @@
 - Create test harness for plugin execution
 - Implement simple test plugins for validation
 - Add integration tests for plugin loading and execution
+- Add tests for local network access
+- Add tests for plugin verification and integrity checks
 
 ### 3.3: Plugin Developer Tools
 
@@ -157,6 +177,7 @@
   - Implement proper error handling and timeouts
   - Add trace logging for debugging
 - Add unit tests for all adapter methods
+- Update adapter to respect plugin's declared capabilities
 
 ### 4.2: Plugin Registration with Agent System
 
@@ -244,6 +265,10 @@
   - Basic agent plugin
   - Custom service plugin
 - Include CI/CD configurations
+- Add examples for different permission scenarios:
+  - Standard external API access
+  - Local network access (with `allowLocalNetwork: true`)
+  - Different capability declarations
 
 ### 6.4: Final Testing and Feature Flags
 
