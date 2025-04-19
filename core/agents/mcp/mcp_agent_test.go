@@ -130,6 +130,17 @@ var _ = Describe("MCPAgent", func() {
 			Expect(errors.Is(err, io.ErrClosedPipe)).To(BeTrue())
 			Expect(bio).To(BeEmpty())
 		})
+
+		It("should return ErrNotFound if MCP tool returns an error string", func() {
+			mcpErrorString := "handler returned an error: something went wrong on the server"
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				return mcp_client.NewToolResponse(mcp_client.NewTextContent(mcpErrorString)), nil
+			}
+
+			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			Expect(err).To(MatchError(agents.ErrNotFound))
+			Expect(bio).To(BeEmpty())
+		})
 	})
 
 	Describe("GetArtistURL", func() {
@@ -183,6 +194,17 @@ var _ = Describe("MCPAgent", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("MCP agent process communication error"))
 			Expect(errors.Is(err, io.ErrClosedPipe)).To(BeTrue())
+			Expect(url).To(BeEmpty())
+		})
+
+		It("should return ErrNotFound if MCP tool returns an error string", func() {
+			mcpErrorString := "handler returned an error: could not find url"
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				return mcp_client.NewToolResponse(mcp_client.NewTextContent(mcpErrorString)), nil
+			}
+
+			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			Expect(err).To(MatchError(agents.ErrNotFound))
 			Expect(url).To(BeEmpty())
 		})
 	})

@@ -216,12 +216,18 @@ func (a *MCPAgent) callMCPTool(ctx context.Context, toolName string, args any) (
 
 	// Process the response
 	if response == nil || len(response.Content) == 0 || response.Content[0].TextContent == nil || response.Content[0].TextContent.Text == "" {
-		log.Warn(ctx, "MCP tool returned empty or invalid response", "tool", toolName)
+		log.Warn(ctx, "MCP tool returned empty or invalid response structure", "tool", toolName)
 		return "", agents.ErrNotFound
 	}
 
-	// Return the text content
+	// Check if the returned text content itself indicates an error from the MCP tool
 	resultText := response.Content[0].TextContent.Text
+	if strings.HasPrefix(resultText, "handler returned an error:") {
+		log.Warn(ctx, "MCP tool returned an error message in its response", "tool", toolName, "mcpError", resultText)
+		return "", agents.ErrNotFound // Treat MCP tool errors as "not found"
+	}
+
+	// Return the successful text content
 	log.Debug(ctx, "Received response from MCP agent", "tool", toolName, "length", len(resultText))
 	return resultText, nil
 }
