@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 	"unsafe"
 )
@@ -35,6 +36,7 @@ const (
 
 // callHostHTTPFetch provides a Go-friendly interface to the http_fetch host function.
 func callHostHTTPFetch(ctx context.Context, method, url string, requestBody []byte, timeout time.Duration) (statusCode int, responseBody []byte, err error) {
+	log.Printf("[MCP] Debug: WASM Fetch (Host Call): Method=%s, URL=%s, Timeout=%v", method, url, timeout)
 
 	// --- Prepare Input Pointers ---
 	urlPtr, urlLen := stringToPtr(url)
@@ -49,6 +51,7 @@ func callHostHTTPFetch(ctx context.Context, method, url string, requestBody []by
 		// Handle case where context might already be cancelled
 		select {
 		case <-ctx.Done():
+			log.Printf("[MCP] Debug: WASM Fetch context cancelled before host call: %v", ctx.Err())
 			return 0, nil, ctx.Err()
 		default:
 		}
@@ -69,6 +72,7 @@ func callHostHTTPFetch(ctx context.Context, method, url string, requestBody []by
 	resultErrorLenPtr := &resultErrorLen
 
 	// --- Call the Host Function ---
+	log.Printf("[MCP] Debug: WASM Fetch calling host function http_fetch...")
 	hostReturnCode := http_fetch(
 		urlPtr, urlLen,
 		methodPtr, methodLen,
@@ -78,32 +82,42 @@ func callHostHTTPFetch(ctx context.Context, method, url string, requestBody []by
 		resultBodyPtr, resultBodyCapacity, uint32(uintptr(unsafe.Pointer(resultBodyLenPtr))),
 		resultErrorPtr, resultErrorCapacity, uint32(uintptr(unsafe.Pointer(resultErrorLenPtr))),
 	)
+	log.Printf("[MCP] Debug: WASM Fetch host function returned code: %d", hostReturnCode)
 
 	// --- Process Results ---
 	if hostReturnCode != 0 {
-		return 0, nil, errors.New("host function http_fetch failed internally")
+		err = errors.New("host function http_fetch failed internally")
+		log.Printf("[MCP] Error: WASM Fetch host function failed: %v", err)
+		return 0, nil, err
 	}
 
 	statusCode = int(resultStatus)
+	log.Printf("[MCP] Debug: WASM Fetch received status code from host: %d", statusCode)
 
 	if resultErrorLen > 0 {
 		actualErrorLen := min(resultErrorLen, resultErrorCapacity)
 		errMsg := string(resultErrorBuffer[:actualErrorLen])
-		return statusCode, nil, errors.New(errMsg)
+		err = errors.New(errMsg)
+		log.Printf("[MCP] Error: WASM Fetch received error from host: %s", errMsg)
+		return statusCode, nil, err
 	}
 
 	if resultBodyLen > 0 {
 		actualBodyLen := min(resultBodyLen, resultBodyCapacity)
 		responseBody = make([]byte, actualBodyLen)
 		copy(responseBody, resultBodyBuffer[:actualBodyLen])
+		log.Printf("[MCP] Debug: WASM Fetch received %d bytes from host body (reported size: %d)", actualBodyLen, resultBodyLen)
 
 		if resultBodyLen > resultBodyCapacity {
 			err = fmt.Errorf("response body truncated: received %d bytes, but actual size was %d", actualBodyLen, resultBodyLen)
-			return statusCode, responseBody, err
+			log.Printf("[MCP] Warn: WASM Fetch %v", err)
+			return statusCode, responseBody, err // Return truncated body with error
 		}
+		log.Printf("[MCP] Debug: WASM Fetch completed successfully.")
 		return statusCode, responseBody, nil
 	}
 
+	log.Printf("[MCP] Debug: WASM Fetch completed successfully (no body, no error).")
 	return statusCode, nil, nil
 }
 
@@ -147,14 +161,11 @@ var _ Fetcher = (*wasmFetcher)(nil)
 
 // NewFetcher creates the WASM host function fetcher.
 func NewFetcher() Fetcher {
-	println("Using WASM host fetcher") // Add a log for confirmation
+	log.Println("[MCP] Debug: Using WASM host fetcher")
 	return &wasmFetcher{}
 }
 
 func (wf *wasmFetcher) Fetch(ctx context.Context, method, url string, requestBody []byte, timeout time.Duration) (statusCode int, responseBody []byte, err error) {
-	// Directly call the wrapper provided by the user
-	// Note: Headers like Accept/User-Agent are assumed to be handled by the host
-	// or aren't settable via this interface. If they are critical, the host
-	// function definition (`http_fetch`) would need to be extended.
+	// Directly call the wrapper which now contains logging
 	return callHostHTTPFetch(ctx, method, url, requestBody, timeout)
 }

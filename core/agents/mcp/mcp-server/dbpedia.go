@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json" // Reusing ErrNotFound from wikidata.go (implicitly via main)
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,7 +21,9 @@ const defaultDbpediaTimeout = 20 * time.Second
 
 // GetArtistBioFromDBpedia queries DBpedia for an artist's abstract using their name.
 func GetArtistBioFromDBpedia(fetcher Fetcher, ctx context.Context, name string) (string, error) {
+	log.Printf("[MCP] Debug: GetArtistBioFromDBpedia called for name: %s", name)
 	if name == "" {
+		log.Printf("[MCP] Error: GetArtistBioFromDBpedia requires a name.")
 		return "", fmt.Errorf("name is required to query DBpedia by name")
 	}
 
@@ -54,43 +57,53 @@ SELECT DISTINCT ?abstract WHERE {
 	queryValues.Set("format", "application/sparql-results+json") // DBpedia standard format
 
 	reqURL := fmt.Sprintf("%s?%s", dbpediaEndpoint, queryValues.Encode())
+	log.Printf("[MCP] Debug: DBpedia Bio Request URL: %s", reqURL)
 
 	timeout := defaultDbpediaTimeout
 	if deadline, ok := ctx.Deadline(); ok {
 		timeout = time.Until(deadline)
 	}
+	log.Printf("[MCP] Debug: Fetching from DBpedia with timeout: %v", timeout)
 
 	statusCode, bodyBytes, err := fetcher.Fetch(ctx, "GET", reqURL, nil, timeout)
 	if err != nil {
+		log.Printf("[MCP] Error: Fetcher failed for DBpedia bio request (name: '%s'): %v", name, err)
 		return "", fmt.Errorf("failed to execute DBpedia request: %w", err)
 	}
 
 	if statusCode != http.StatusOK {
+		log.Printf("[MCP] Error: DBpedia bio query failed for name '%s' with status %d: %s", name, statusCode, string(bodyBytes))
 		return "", fmt.Errorf("DBpedia query failed with status %d: %s", statusCode, string(bodyBytes))
 	}
+	log.Printf("[MCP] Debug: DBpedia bio query successful (status %d), %d bytes received.", statusCode, len(bodyBytes))
 
 	var result SparqlResult
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		// Try reading the raw body for debugging if JSON parsing fails
 		// (Seek back to the beginning might be needed if already read for error)
 		// For simplicity, just return the parsing error now.
+		log.Printf("[MCP] Error: Failed to decode DBpedia bio response for name '%s': %v", name, err)
 		return "", fmt.Errorf("failed to decode DBpedia response: %w", err)
 	}
 
 	// Extract the abstract
 	if len(result.Results.Bindings) > 0 {
 		if abstractVal, ok := result.Results.Bindings[0]["abstract"]; ok {
+			log.Printf("[MCP] Debug: Found DBpedia abstract for '%s'.", name)
 			return abstractVal.Value, nil
 		}
 	}
 
 	// Use the shared ErrNotFound
+	log.Printf("[MCP] Warn: No abstract found on DBpedia for name '%s'.", name)
 	return "", ErrNotFound
 }
 
 // GetArtistWikipediaURLFromDBpedia queries DBpedia for an artist's Wikipedia URL using their name.
 func GetArtistWikipediaURLFromDBpedia(fetcher Fetcher, ctx context.Context, name string) (string, error) {
+	log.Printf("[MCP] Debug: GetArtistWikipediaURLFromDBpedia called for name: %s", name)
 	if name == "" {
+		log.Printf("[MCP] Error: GetArtistWikipediaURLFromDBpedia requires a name.")
 		return "", fmt.Errorf("name is required to query DBpedia by name for URL")
 	}
 
@@ -120,32 +133,40 @@ SELECT DISTINCT ?wikiPage WHERE {
 	queryValues.Set("format", "application/sparql-results+json")
 
 	reqURL := fmt.Sprintf("%s?%s", dbpediaEndpoint, queryValues.Encode())
+	log.Printf("[MCP] Debug: DBpedia URL Request URL: %s", reqURL)
 
 	timeout := defaultDbpediaTimeout
 	if deadline, ok := ctx.Deadline(); ok {
 		timeout = time.Until(deadline)
 	}
+	log.Printf("[MCP] Debug: Fetching DBpedia URL with timeout: %v", timeout)
 
 	statusCode, bodyBytes, err := fetcher.Fetch(ctx, "GET", reqURL, nil, timeout)
 	if err != nil {
+		log.Printf("[MCP] Error: Fetcher failed for DBpedia URL request (name: '%s'): %v", name, err)
 		return "", fmt.Errorf("failed to execute DBpedia URL request: %w", err)
 	}
 
 	if statusCode != http.StatusOK {
+		log.Printf("[MCP] Error: DBpedia URL query failed for name '%s' with status %d: %s", name, statusCode, string(bodyBytes))
 		return "", fmt.Errorf("DBpedia URL query failed with status %d: %s", statusCode, string(bodyBytes))
 	}
+	log.Printf("[MCP] Debug: DBpedia URL query successful (status %d), %d bytes received.", statusCode, len(bodyBytes))
 
 	var result SparqlResult
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		log.Printf("[MCP] Error: Failed to decode DBpedia URL response for name '%s': %v", name, err)
 		return "", fmt.Errorf("failed to decode DBpedia URL response: %w", err)
 	}
 
 	// Extract the URL
 	if len(result.Results.Bindings) > 0 {
 		if pageVal, ok := result.Results.Bindings[0]["wikiPage"]; ok {
+			log.Printf("[MCP] Debug: Found DBpedia Wikipedia URL for '%s': %s", name, pageVal.Value)
 			return pageVal.Value, nil
 		}
 	}
 
+	log.Printf("[MCP] Warn: No Wikipedia URL found on DBpedia for name '%s'.", name)
 	return "", ErrNotFound
 }
