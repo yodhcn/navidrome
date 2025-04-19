@@ -20,11 +20,10 @@ import (
 )
 
 const (
-	mcpAgentName = "mcp"
-	// Hardcoded path for PoC
-	mcpServerPath = "/Users/deluan/Development/navidrome/plugins-mcp/mcp-server"
-	mcpToolName   = "get_artist_biography"
-	// TODO: Add configuration for restart delays
+	mcpAgentName          = "mcp"
+	mcpServerPath         = "/Users/deluan/Development/navidrome/plugins-mcp/mcp-server"
+	mcpToolNameGetBio     = "get_artist_biography"
+	mcpToolNameGetURL     = "get_artist_url"
 	initializationTimeout = 10 * time.Second
 )
 
@@ -165,13 +164,11 @@ func (a *MCPAgent) ensureClientInitialized(ctx context.Context) (err error) {
 	return nil // Success
 }
 
-// getArtistBiographyArgs defines the structure for the MCP tool arguments.
-// IMPORTANT: Field names MUST be exported (start with uppercase) for JSON marshalling,
-// but the `json` tags determine the actual field names sent over MCP.
+// getArtistBiographyArgs defines the structure for the get_artist_biography MCP tool arguments.
 type getArtistBiographyArgs struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	Mbid string `json:"mbid,omitempty"` // Use omitempty if MBID might be absent
+	Mbid string `json:"mbid,omitempty"`
 }
 
 // GetArtistBiography retrieves the artist biography by calling the external MCP server.
@@ -207,35 +204,102 @@ func (a *MCPAgent) GetArtistBiography(ctx context.Context, id, name, mbid string
 	}
 
 	// Call the tool using the client reference
-	log.Debug(ctx, "Calling MCP tool", "tool", mcpToolName, "args", args)
-	response, err := currentClient.CallTool(ctx, mcpToolName, args) // Use currentClient
+	log.Debug(ctx, "Calling MCP tool", "tool", mcpToolNameGetBio, "args", args)
+	response, err := currentClient.CallTool(ctx, mcpToolNameGetBio, args) // Use currentClient
 	if err != nil {
 		// Handle potential pipe closures or other communication errors
-		log.Error(ctx, "Failed to call MCP tool", "tool", mcpToolName, "error", err)
+		log.Error(ctx, "Failed to call MCP tool", "tool", mcpToolNameGetBio, "error", err)
 		// Check if the error indicates a broken pipe, suggesting the server died
 		if errors.Is(err, io.ErrClosedPipe) || strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "EOF") {
 			log.Warn(ctx, "MCP tool call failed, possibly due to server process exit. State will be reset.")
 			// State reset is handled by the monitoring goroutine, just return error
 			return "", fmt.Errorf("MCP agent process communication error: %w", err)
 		}
-		return "", fmt.Errorf("failed to call MCP tool '%s': %w", mcpToolName, err)
+		return "", fmt.Errorf("failed to call MCP tool '%s': %w", mcpToolNameGetBio, err)
 	}
 
 	// Process the response
 	if response == nil || len(response.Content) == 0 || response.Content[0].TextContent == nil {
-		log.Warn(ctx, "MCP tool returned empty or invalid response", "tool", mcpToolName)
+		log.Warn(ctx, "MCP tool returned empty or invalid response", "tool", mcpToolNameGetBio)
 		return "", agents.ErrNotFound
 	}
 
 	bio := response.Content[0].TextContent.Text
-	log.Debug(ctx, "Received biography from MCP agent", "tool", mcpToolName, "bioLength", len(bio))
+	log.Debug(ctx, "Received biography from MCP agent", "tool", mcpToolNameGetBio, "bioLength", len(bio))
 
 	// Return the biography text
 	return bio, nil
 }
 
-// Ensure MCPAgent implements the required interface
+// getArtistURLArgs defines the structure for the get_artist_url MCP tool arguments.
+type getArtistURLArgs struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Mbid string `json:"mbid,omitempty"`
+}
+
+// GetArtistURL retrieves the artist URL by calling the external MCP server.
+func (a *MCPAgent) GetArtistURL(ctx context.Context, id, name, mbid string) (string, error) {
+	// Ensure the client is initialized and the server is running (attempts restart if needed)
+	if err := a.ensureClientInitialized(ctx); err != nil {
+		log.Error(ctx, "MCP agent initialization/restart failed, cannot get URL", "error", err)
+		return "", fmt.Errorf("MCP agent not ready: %w", err)
+	}
+
+	// Lock to ensure only one request uses the client/pipes at a time
+	a.mu.Lock()
+
+	// Check if the client is still valid *after* ensuring initialization and acquiring lock.
+	if a.client == nil {
+		a.mu.Unlock()
+		log.Error(ctx, "MCP client became invalid after initialization check (server process likely died)")
+		return "", fmt.Errorf("MCP agent process is not running")
+	}
+
+	// Keep a reference to the client while locked
+	currentClient := a.client
+	a.mu.Unlock() // Release lock before making the potentially blocking MCP call
+
+	log.Debug(ctx, "Calling MCP agent GetArtistURL", "id", id, "name", name, "mbid", mbid)
+
+	// Prepare arguments for the tool call
+	args := getArtistURLArgs{
+		ID:   id,
+		Name: name,
+		Mbid: mbid,
+	}
+
+	// Call the tool using the client reference
+	log.Debug(ctx, "Calling MCP tool", "tool", mcpToolNameGetURL, "args", args)
+	response, err := currentClient.CallTool(ctx, mcpToolNameGetURL, args) // Use currentClient
+	if err != nil {
+		// Handle potential pipe closures or other communication errors
+		log.Error(ctx, "Failed to call MCP tool", "tool", mcpToolNameGetURL, "error", err)
+		// Check if the error indicates a broken pipe, suggesting the server died
+		if errors.Is(err, io.ErrClosedPipe) || strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "EOF") {
+			log.Warn(ctx, "MCP tool call failed, possibly due to server process exit. State will be reset.")
+			// State reset is handled by the monitoring goroutine, just return error
+			return "", fmt.Errorf("MCP agent process communication error: %w", err)
+		}
+		return "", fmt.Errorf("failed to call MCP tool '%s': %w", mcpToolNameGetURL, err)
+	}
+
+	// Process the response
+	if response == nil || len(response.Content) == 0 || response.Content[0].TextContent == nil {
+		log.Warn(ctx, "MCP tool returned empty or invalid response", "tool", mcpToolNameGetURL)
+		return "", agents.ErrNotFound
+	}
+
+	url := response.Content[0].TextContent.Text
+	log.Debug(ctx, "Received URL from MCP agent", "tool", mcpToolNameGetURL, "url", url)
+
+	// Return the URL text
+	return url, nil
+}
+
+// Ensure MCPAgent implements the required interfaces
 var _ agents.ArtistBiographyRetriever = (*MCPAgent)(nil)
+var _ agents.ArtistURLRetriever = (*MCPAgent)(nil)
 
 func init() {
 	agents.Register(mcpAgentName, mcpConstructor)
