@@ -44,31 +44,13 @@ func newMCPWasm(runtime api.Closer, cache wazero.CompilationCache) *MCPWasm {
 
 // --- mcpImplementation interface methods ---
 
-func (w *MCPWasm) GetArtistBiography(ctx context.Context, id, name, mbid string) (string, error) {
-	args := ArtistArgs{
-		ID:   id,
-		Name: name,
-		Mbid: mbid,
-	}
-	return w.callMCPTool(ctx, McpToolNameGetBio, args)
-}
-
-func (w *MCPWasm) GetArtistURL(ctx context.Context, id, name, mbid string) (string, error) {
-	args := ArtistArgs{
-		ID:   id,
-		Name: name,
-		Mbid: mbid,
-	}
-	return w.callMCPTool(ctx, McpToolNameGetURL, args)
-}
-
 // Close cleans up instance-specific WASM resources.
 // It does NOT close the shared runtime or cache.
 func (w *MCPWasm) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.cleanupResources_locked()
-	return nil // Currently, cleanup doesn't return errors
+	return nil
 }
 
 // --- Internal Helper Methods ---
@@ -92,10 +74,9 @@ func (w *MCPWasm) ensureClientInitialized_locked(ctx context.Context) error {
 
 	log.Info(ctx, "Initializing WASM MCP client and starting/restarting server module...", "serverPath", McpServerPath)
 
-	// Clean up any old instance resources *before* starting new ones
 	w.cleanupResources_locked()
 
-	// Check if shared runtime exists (it should if constructor succeeded)
+	// Check if shared runtime exists
 	if w.wasmRuntime == nil {
 		return errors.New("shared Wazero runtime not initialized for MCPWasm")
 	}
@@ -114,7 +95,6 @@ func (w *MCPWasm) ensureClientInitialized_locked(ctx context.Context) error {
 		return fmt.Errorf("failed to start WASM MCP server: %w", startErr)
 	}
 
-	// --- Initialize MCP client ---
 	transport := stdio.NewStdioServerTransportWithIO(hostStdoutReader, hostStdinWriter)
 	clientImpl := mcp.NewClient(transport)
 
@@ -136,19 +116,17 @@ func (w *MCPWasm) ensureClientInitialized_locked(ctx context.Context) error {
 		return err
 	}
 
-	// --- Initialization successful, update agent state ---
 	w.wasmModule = mod
 	w.wasmCompiled = compiled
-	w.stdin = hostStdinWriter // This is the pipe the agent writes to
+	w.stdin = hostStdinWriter
 	w.client = clientImpl
 
 	log.Info(ctx, "WASM MCP client initialized successfully")
-	return nil // Success
+	return nil
 }
 
 // callMCPTool handles ensuring initialization and calling the MCP tool.
 func (w *MCPWasm) callMCPTool(ctx context.Context, toolName string, args any) (string, error) {
-	// Ensure the client is initialized and the server is running (attempts restart if needed)
 	w.mu.Lock()
 	err := w.ensureClientInitialized_locked(ctx)
 	if err != nil {

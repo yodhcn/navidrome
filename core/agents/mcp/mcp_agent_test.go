@@ -13,9 +13,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Use the exported mcpClient interface from the mcp package
-// type internalMCPClient = mcp.InternalMCPClient // Assuming you export the interface // REMOVE THIS LINE
-
 // Define the mcpClient interface locally for mocking, matching the one
 // used internally by MCPNative/MCPWasm.
 type mcpClient interface {

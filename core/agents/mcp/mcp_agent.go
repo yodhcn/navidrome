@@ -8,10 +8,9 @@ import (
 	"strings"
 	"time"
 
-	mcp "github.com/metoro-io/mcp-golang" // Needed for mcpClient interface types
-	"github.com/tetratelabs/wazero"       // Needed for constructor
+	mcp "github.com/metoro-io/mcp-golang"
+	"github.com/tetratelabs/wazero"
 
-	// Needed for constructor types (api.Closer)
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 
 	"github.com/navidrome/navidrome/conf"
@@ -20,7 +19,7 @@ import (
 	"github.com/navidrome/navidrome/model"
 )
 
-// Exported constants for testing
+// Constants used by the MCP agent
 const (
 	McpAgentName          = "mcp"
 	initializationTimeout = 5 * time.Second
@@ -30,8 +29,7 @@ const (
 	McpToolNameGetURL = "get_artist_url"
 )
 
-// mcpClient interface matching the methods used from mcp.Client
-// Needs to be defined here as it's used by implementations
+// mcpClient interface matching the methods used from mcp.Client.
 type mcpClient interface {
 	Initialize(ctx context.Context) (*mcp.InitializeResponse, error)
 	CallTool(ctx context.Context, toolName string, args any) (*mcp.ToolResponse, error)
@@ -40,9 +38,10 @@ type mcpClient interface {
 // mcpImplementation defines the common interface for both native and WASM MCP agents.
 // This allows the main MCPAgent to delegate calls without knowing the underlying type.
 type mcpImplementation interface {
-	agents.ArtistBiographyRetriever
-	agents.ArtistURLRetriever
 	Close() error // For cleaning up resources associated with this specific implementation.
+
+	// callMCPTool is the core method implemented differently by native/wasm
+	callMCPTool(ctx context.Context, toolName string, args any) (string, error)
 }
 
 // MCPAgent is the public-facing agent registered with Navidrome.
@@ -52,14 +51,13 @@ type MCPAgent struct {
 	// and the implementation handles its own internal state synchronization.
 	impl mcpImplementation
 
-	// We might need a way to close shared resources later, but for now,
-	// the agent lifecycle is managed by the constructor and the impl.Close().
+	// Shared Wazero resources (runtime, cache) are managed externally
+	// and closed separately, likely during application shutdown.
 }
 
 // mcpConstructor creates the appropriate MCP implementation (native or WASM)
 // and wraps it in the MCPAgent.
 func mcpConstructor(ds model.DataStore) agents.Interface {
-	// Check if the MCP server executable/WASM exists
 	if _, err := os.Stat(McpServerPath); os.IsNotExist(err) {
 		log.Warn("MCP server executable/WASM not found, disabling agent", "path", McpServerPath, "error", err)
 		return nil
@@ -70,9 +68,9 @@ func mcpConstructor(ds model.DataStore) agents.Interface {
 
 	if strings.HasSuffix(McpServerPath, ".wasm") {
 		log.Info("Configuring MCP agent for WASM execution", "path", McpServerPath)
-		ctx := context.Background() // Use background context for setup
+		ctx := context.Background()
 
-		// --- Setup Shared Wazero Resources ---
+		// Setup Shared Wazero Resources
 		var cache wazero.CompilationCache
 		cacheDir := filepath.Join(conf.Server.DataFolder, "cache", "wazero")
 		if errMkdir := os.MkdirAll(cacheDir, 0755); errMkdir != nil {
@@ -81,50 +79,42 @@ func mcpConstructor(ds model.DataStore) agents.Interface {
 			cache, err = wazero.NewCompilationCacheWithDir(cacheDir)
 			if err != nil {
 				log.Error(ctx, "Failed to create Wazero compilation cache, WASM caching disabled", "path", cacheDir, "error", err)
-				cache = nil // Ensure cache is nil if creation failed
+				cache = nil
 			}
 		}
 
-		// Create runtime config, adding cache if it exists
 		runtimeConfig := wazero.NewRuntimeConfig()
 		if cache != nil {
 			runtimeConfig = runtimeConfig.WithCompilationCache(cache)
 		}
 
-		// Create the shared runtime
 		runtime := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
 
-		// Register host functions
 		if err = registerHostFunctions(ctx, runtime); err != nil {
 			_ = runtime.Close(ctx)
 			if cache != nil {
 				_ = cache.Close(ctx)
 			}
-			return nil // Fatal error
+			return nil // Fatal error: Host functions required
 		}
 
-		// Instantiate WASI
 		if _, err = wasi_snapshot_preview1.Instantiate(ctx, runtime); err != nil {
 			log.Error(ctx, "Failed to instantiate WASI on shared Wazero runtime, MCP WASM agent disabled", "error", err)
 			_ = runtime.Close(ctx)
 			if cache != nil {
 				_ = cache.Close(ctx)
 			}
-			return nil // Fatal error
+			return nil // Fatal error: WASI required
 		}
-		// --- End Shared Resource Setup ---
 
-		// Create the WASM-specific implementation
-		agentImpl = newMCPWasm(runtime, cache) // Pass shared resources
+		agentImpl = newMCPWasm(runtime, cache)
 		log.Info(ctx, "Shared Wazero runtime, WASI, cache, and host functions initialized for MCP agent")
 
 	} else {
 		log.Info("Configuring MCP agent for native execution", "path", McpServerPath)
-		// Create the native-specific implementation
 		agentImpl = newMCPNative()
 	}
 
-	// Return the wrapper agent
 	log.Info("MCP Agent implementation created successfully")
 	return &MCPAgent{impl: agentImpl}
 }
@@ -142,7 +132,7 @@ func NewAgentForTesting(mockClient mcpClient) agents.Interface {
 		// For WASM testing, we might not need the full runtime setup,
 		// just the struct. Pass nil for shared resources for now.
 		// We rely on the mockClient being used before any real WASM interaction.
-		wasmImpl := newMCPWasm(nil, nil) // Pass nil runtime/cache
+		wasmImpl := newMCPWasm(nil, nil)
 		wasmImpl.ClientOverride = mockClient
 		agentImpl = wasmImpl
 	} else {
@@ -154,8 +144,6 @@ func NewAgentForTesting(mockClient mcpClient) agents.Interface {
 	return &MCPAgent{impl: agentImpl}
 }
 
-// --- MCPAgent Method Implementations (Delegation) ---
-
 func (a *MCPAgent) AgentName() string {
 	return McpAgentName
 }
@@ -164,14 +152,18 @@ func (a *MCPAgent) GetArtistBiography(ctx context.Context, id, name, mbid string
 	if a.impl == nil {
 		return "", errors.New("MCP agent implementation is nil")
 	}
-	return a.impl.GetArtistBiography(ctx, id, name, mbid)
+	// Construct args and call the implementation's specific tool caller
+	args := ArtistArgs{ID: id, Name: name, Mbid: mbid}
+	return a.impl.callMCPTool(ctx, McpToolNameGetBio, args)
 }
 
 func (a *MCPAgent) GetArtistURL(ctx context.Context, id, name, mbid string) (string, error) {
 	if a.impl == nil {
 		return "", errors.New("MCP agent implementation is nil")
 	}
-	return a.impl.GetArtistURL(ctx, id, name, mbid)
+	// Construct args and call the implementation's specific tool caller
+	args := ArtistArgs{ID: id, Name: name, Mbid: mbid}
+	return a.impl.callMCPTool(ctx, McpToolNameGetURL, args)
 }
 
 // Note: A Close method on MCPAgent itself isn't part of agents.Interface.
@@ -179,20 +171,15 @@ func (a *MCPAgent) GetArtistURL(ctx context.Context, id, name, mbid string) (str
 // Cleanup of shared Wazero resources needs separate handling (e.g., on app shutdown).
 
 // ArtistArgs defines the structure for MCP tool arguments requiring artist info.
-// Keep it here as it's used by both implementations indirectly via callMCPTool.
 type ArtistArgs struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Mbid string `json:"mbid,omitempty"`
 }
 
-// Ensure MCPAgent still fulfills the registration requirements indirectly
 var _ agents.ArtistBiographyRetriever = (*MCPAgent)(nil)
 var _ agents.ArtistURLRetriever = (*MCPAgent)(nil)
 
 func init() {
-	// Register the real constructor, not the test one
 	agents.Register(McpAgentName, mcpConstructor)
 }
-
-// Core logic moved to implementations.

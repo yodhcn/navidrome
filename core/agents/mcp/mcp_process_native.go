@@ -34,24 +34,6 @@ func newMCPNative() *MCPNative {
 
 // --- mcpImplementation interface methods ---
 
-func (n *MCPNative) GetArtistBiography(ctx context.Context, id, name, mbid string) (string, error) {
-	args := ArtistArgs{
-		ID:   id,
-		Name: name,
-		Mbid: mbid,
-	}
-	return n.callMCPTool(ctx, McpToolNameGetBio, args)
-}
-
-func (n *MCPNative) GetArtistURL(ctx context.Context, id, name, mbid string) (string, error) {
-	args := ArtistArgs{
-		ID:   id,
-		Name: name,
-		Mbid: mbid,
-	}
-	return n.callMCPTool(ctx, McpToolNameGetURL, args)
-}
-
 func (n *MCPNative) Close() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
