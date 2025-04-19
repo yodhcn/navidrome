@@ -27,7 +27,7 @@ import (
 // Exported constants for testing
 const (
 	McpAgentName          = "mcp"
-	McpServerPath         = "/Users/deluan/Development/navidrome/plugins-mcp/mcp-server.wasm"
+	McpServerPath         = "/Users/deluan/Development/navidrome/plugins-mcp/mcp-server"
 	McpToolNameGetBio     = "get_artist_biography"
 	McpToolNameGetURL     = "get_artist_url"
 	initializationTimeout = 10 * time.Second
