@@ -107,8 +107,29 @@ func mcpConstructor(ds model.DataStore) agents.Interface {
 			return nil // Fatal error: WASI required
 		}
 
-		agentImpl = newMCPWasm(runtime, cache)
-		log.Info(ctx, "Shared Wazero runtime, WASI, cache, and host functions initialized for MCP agent")
+		// Compile the module
+		log.Debug(ctx, "Pre-compiling WASM module...", "path", McpServerPath)
+		wasmBytes, err := os.ReadFile(McpServerPath)
+		if err != nil {
+			log.Error(ctx, "Failed to read WASM module file, disabling agent", "path", McpServerPath, "error", err)
+			_ = runtime.Close(ctx)
+			if cache != nil {
+				_ = cache.Close(ctx)
+			}
+			return nil
+		}
+		compiledModule, err := runtime.CompileModule(ctx, wasmBytes)
+		if err != nil {
+			log.Error(ctx, "Failed to pre-compile WASM module, disabling agent", "path", McpServerPath, "error", err)
+			_ = runtime.Close(ctx)
+			if cache != nil {
+				_ = cache.Close(ctx)
+			}
+			return nil
+		}
+
+		agentImpl = newMCPWasm(runtime, cache, compiledModule)
+		log.Info(ctx, "Shared Wazero runtime, WASI, cache, host functions initialized, and module pre-compiled for MCP agent")
 
 	} else {
 		log.Info("Configuring MCP agent for native execution", "path", McpServerPath)
@@ -132,7 +153,7 @@ func NewAgentForTesting(mockClient mcpClient) agents.Interface {
 		// For WASM testing, we might not need the full runtime setup,
 		// just the struct. Pass nil for shared resources for now.
 		// We rely on the mockClient being used before any real WASM interaction.
-		wasmImpl := newMCPWasm(nil, nil)
+		wasmImpl := newMCPWasm(nil, nil, nil)
 		wasmImpl.ClientOverride = mockClient
 		agentImpl = wasmImpl
 	} else {
