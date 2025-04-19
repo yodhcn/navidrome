@@ -38,6 +38,7 @@ require (
 	github.com/lestrrat-go/jwx/v2 v2.1.4
 	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/mattn/go-sqlite3 v1.14.27
+	github.com/metoro-io/mcp-golang v0.11.0
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/mileusna/useragent v1.3.5
 	github.com/onsi/ginkgo/v2 v2.23.4
@@ -53,6 +54,7 @@ require (
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
+	github.com/tetratelabs/wazero v1.9.0
 	github.com/unrolled/secure v1.17.0
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1
 	go.uber.org/goleak v1.3.0
@@ -100,7 +102,6 @@ require (
 	github.com/lestrrat-go/iter v1.0.2 // indirect
 	github.com/lestrrat-go/option v1.0.1 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
-	github.com/metoro-io/mcp-golang v0.11.0 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ogier/pflag v0.0.1 // indirect
