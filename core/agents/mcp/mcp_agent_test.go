@@ -13,8 +13,11 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// mcpClient defines the interface for the MCP client methods used by the agent.
-// This allows mocking the client for testing.
+// Use the exported mcpClient interface from the mcp package
+// type internalMCPClient = mcp.InternalMCPClient // Assuming you export the interface // REMOVE THIS LINE
+
+// Define the mcpClient interface locally for mocking, matching the one
+// used internally by MCPNative/MCPWasm.
 type mcpClient interface {
 	Initialize(ctx context.Context) (*mcp_client.InitializeResponse, error)
 	CallTool(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error)
@@ -44,13 +47,15 @@ func (m *mockMCPClient) CallTool(ctx context.Context, toolName string, args any)
 	return &mcp_client.ToolResponse{}, nil
 }
 
-// Ensure mock implements the interface (compile-time check)
+// Ensure mock implements the local interface (compile-time check)
 var _ mcpClient = (*mockMCPClient)(nil)
 
 var _ = Describe("MCPAgent", func() {
 	var (
-		ctx        context.Context
-		agent      *mcp.MCPAgent // Use concrete type from the package
+		ctx context.Context
+		// We test the public MCPAgent wrapper, which uses the implementations internally.
+		// The actual agent instance might be native or wasm depending on McpServerPath
+		agent      agents.Interface // Use the public agents.Interface
 		mockClient *mockMCPClient
 	)
 
@@ -60,11 +65,18 @@ var _ = Describe("MCPAgent", func() {
 			callToolArgs: make([]any, 0), // Reset args on each test
 		}
 
-		// Instantiate the real agent
-		agent = &mcp.MCPAgent{}
-		// Inject the mock client directly using the exported override field
-		agent.ClientOverride = mockClient
+		// Instantiate the real agent using a testing constructor
+		// This constructor needs to be added to the mcp package.
+		agent = mcp.NewAgentForTesting(mockClient)
+		Expect(agent).NotTo(BeNil(), "Agent should be created")
 	})
+
+	// Helper to get the concrete agent type for calling specific methods
+	getConcreteAgent := func() *mcp.MCPAgent {
+		concreteAgent, ok := agent.(*mcp.MCPAgent)
+		Expect(ok).To(BeTrue(), "Agent should be of type *mcp.MCPAgent")
+		return concreteAgent
+	}
 
 	Describe("GetArtistBiography", func() {
 		It("should call the correct tool and return the biography", func() {
@@ -79,7 +91,7 @@ var _ = Describe("MCPAgent", func() {
 				return mcp_client.NewToolResponse(mcp_client.NewTextContent(expectedBio)), nil
 			}
 
-			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			bio, err := getConcreteAgent().GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(bio).To(Equal(expectedBio))
 		})
@@ -90,10 +102,16 @@ var _ = Describe("MCPAgent", func() {
 				return nil, expectedErr
 			}
 
-			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			bio, err := getConcreteAgent().GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
 			Expect(err).To(HaveOccurred())
+			// The error originates from the implementation now, check for specific part
+			Expect(err.Error()).To(SatisfyAny(
+				ContainSubstring("native MCP agent not ready"), // Error from native
+				ContainSubstring("WASM MCP agent not ready"),   // Error from WASM
+				ContainSubstring("failed to call native MCP tool"),
+				ContainSubstring("failed to call WASM MCP tool"),
+			))
 			Expect(errors.Is(err, expectedErr)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("failed to call MCP tool '%s'", mcp.McpToolNameGetBio)))
 			Expect(bio).To(BeEmpty())
 		})
 
@@ -103,7 +121,7 @@ var _ = Describe("MCPAgent", func() {
 				return mcp_client.NewToolResponse(), nil
 			}
 
-			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			bio, err := getConcreteAgent().GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
 			Expect(err).To(MatchError(agents.ErrNotFound))
 			Expect(bio).To(BeEmpty())
 		})
@@ -114,7 +132,7 @@ var _ = Describe("MCPAgent", func() {
 				return mcp_client.NewToolResponse(mcp_client.NewTextContent("")), nil
 			}
 
-			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			bio, err := getConcreteAgent().GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
 			Expect(err).To(MatchError(agents.ErrNotFound))
 			Expect(bio).To(BeEmpty())
 		})
@@ -124,9 +142,12 @@ var _ = Describe("MCPAgent", func() {
 				return nil, io.ErrClosedPipe
 			}
 
-			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			bio, err := getConcreteAgent().GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("MCP agent process communication error"))
+			Expect(err.Error()).To(SatisfyAny(
+				ContainSubstring("native MCP agent process communication error"),
+				ContainSubstring("WASM MCP agent module communication error"),
+			))
 			Expect(errors.Is(err, io.ErrClosedPipe)).To(BeTrue())
 			Expect(bio).To(BeEmpty())
 		})
@@ -137,7 +158,7 @@ var _ = Describe("MCPAgent", func() {
 				return mcp_client.NewToolResponse(mcp_client.NewTextContent(mcpErrorString)), nil
 			}
 
-			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			bio, err := getConcreteAgent().GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
 			Expect(err).To(MatchError(agents.ErrNotFound))
 			Expect(bio).To(BeEmpty())
 		})
@@ -156,7 +177,7 @@ var _ = Describe("MCPAgent", func() {
 				return mcp_client.NewToolResponse(mcp_client.NewTextContent(expectedURL)), nil
 			}
 
-			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			url, err := getConcreteAgent().GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(url).To(Equal(expectedURL))
 		})
@@ -167,10 +188,15 @@ var _ = Describe("MCPAgent", func() {
 				return nil, expectedErr
 			}
 
-			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			url, err := getConcreteAgent().GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
 			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(SatisfyAny(
+				ContainSubstring("native MCP agent not ready"), // Error from native
+				ContainSubstring("WASM MCP agent not ready"),   // Error from WASM
+				ContainSubstring("failed to call native MCP tool"),
+				ContainSubstring("failed to call WASM MCP tool"),
+			))
 			Expect(errors.Is(err, expectedErr)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("failed to call MCP tool '%s'", mcp.McpToolNameGetURL)))
 			Expect(url).To(BeEmpty())
 		})
 
@@ -180,7 +206,7 @@ var _ = Describe("MCPAgent", func() {
 				return mcp_client.NewToolResponse(), nil
 			}
 
-			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			url, err := getConcreteAgent().GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
 			Expect(err).To(MatchError(agents.ErrNotFound))
 			Expect(url).To(BeEmpty())
 		})
@@ -190,9 +216,12 @@ var _ = Describe("MCPAgent", func() {
 				return nil, fmt.Errorf("write: %w", io.ErrClosedPipe)
 			}
 
-			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			url, err := getConcreteAgent().GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("MCP agent process communication error"))
+			Expect(err.Error()).To(SatisfyAny(
+				ContainSubstring("native MCP agent process communication error"),
+				ContainSubstring("WASM MCP agent module communication error"),
+			))
 			Expect(errors.Is(err, io.ErrClosedPipe)).To(BeTrue())
 			Expect(url).To(BeEmpty())
 		})
@@ -203,7 +232,7 @@ var _ = Describe("MCPAgent", func() {
 				return mcp_client.NewToolResponse(mcp_client.NewTextContent(mcpErrorString)), nil
 			}
 
-			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			url, err := getConcreteAgent().GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
 			Expect(err).To(MatchError(agents.ErrNotFound))
 			Expect(url).To(BeEmpty())
 		})
