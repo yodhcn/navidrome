@@ -71,8 +71,8 @@ var _ = Describe("MCPAgent", func() {
 			expectedBio := "This is the artist bio."
 			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
 				Expect(toolName).To(Equal(mcp.McpToolNameGetBio))
-				Expect(args).To(BeAssignableToTypeOf(mcp.GetArtistBiographyArgs{})) // Use exported type
-				typedArgs := args.(mcp.GetArtistBiographyArgs)                      // Use exported type
+				Expect(args).To(BeAssignableToTypeOf(mcp.ArtistArgs{}))
+				typedArgs := args.(mcp.ArtistArgs)
 				Expect(typedArgs.ID).To(Equal("id1"))
 				Expect(typedArgs.Name).To(Equal("Artist Name"))
 				Expect(typedArgs.Mbid).To(Equal("mbid1"))
@@ -137,8 +137,8 @@ var _ = Describe("MCPAgent", func() {
 			expectedURL := "http://example.com/artist"
 			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
 				Expect(toolName).To(Equal(mcp.McpToolNameGetURL))
-				Expect(args).To(BeAssignableToTypeOf(mcp.GetArtistURLArgs{})) // Use exported type
-				typedArgs := args.(mcp.GetArtistURLArgs)                      // Use exported type
+				Expect(args).To(BeAssignableToTypeOf(mcp.ArtistArgs{}))
+				typedArgs := args.(mcp.ArtistArgs)
 				Expect(typedArgs.ID).To(Equal("id2"))
 				Expect(typedArgs.Name).To(Equal("Another Artist"))
 				Expect(typedArgs.Mbid).To(Equal("mbid2"))
