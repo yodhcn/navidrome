@@ -27,7 +27,7 @@ import (
 // Exported constants for testing
 const (
 	McpAgentName          = "mcp"
-	McpServerPath         = "/Users/deluan/Development/navidrome/plugins-mcp/mcp-server"
+	McpServerPath         = "/Users/deluan/Development/navidrome/plugins-mcp/mcp-server.wasm"
 	McpToolNameGetBio     = "get_artist_biography"
 	McpToolNameGetURL     = "get_artist_url"
 	initializationTimeout = 10 * time.Second
@@ -73,7 +73,7 @@ func mcpConstructor(ds model.DataStore) agents.Interface {
 
 	a := &MCPAgent{}
 
-	// If it's a WASM path, pre-initialize the shared Wazero runtime and cache.
+	// If it's a WASM path, pre-initialize the shared Wazero runtime, cache, and host functions.
 	if strings.HasSuffix(McpServerPath, ".wasm") {
 		ctx := context.Background() // Use background context for setup
 		cacheDir := filepath.Join(conf.Server.DataFolder, "cache", "wazero")
@@ -84,7 +84,6 @@ func mcpConstructor(ds model.DataStore) agents.Interface {
 			if err != nil {
 				log.Error(ctx, "Failed to create Wazero compilation cache, WASM caching disabled", "path", cacheDir, "error", err)
 			} else {
-				// Store the specific cache type
 				a.wasmCache = cache
 				log.Info(ctx, "Wazero compilation cache enabled", "path", cacheDir)
 			}
@@ -93,12 +92,24 @@ func mcpConstructor(ds model.DataStore) agents.Interface {
 		// Create runtime config, adding cache if it was created successfully
 		runtimeConfig := wazero.NewRuntimeConfig()
 		if a.wasmCache != nil {
-			// Use the stored cache directly (already correct type)
 			runtimeConfig = runtimeConfig.WithCompilationCache(a.wasmCache)
 		}
 
 		// Create the shared runtime
 		runtime := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
+
+		// --- Register Host Functions --- Must happen BEFORE WASI instantiation if WASI needs them?
+		// Actually, WASI instantiation is separate from host func instantiation.
+		if err := registerHostFunctions(ctx, runtime); err != nil {
+			// Error already logged by registerHostFunctions
+			_ = runtime.Close(ctx)
+			if a.wasmCache != nil {
+				_ = a.wasmCache.Close(ctx)
+			}
+			return nil
+		}
+		// --- End Host Function Registration ---
+
 		a.wasmRuntime = runtime // Store the runtime closer
 
 		// Instantiate WASI onto the shared runtime. If this fails, the agent is unusable for WASM.
@@ -107,11 +118,11 @@ func mcpConstructor(ds model.DataStore) agents.Interface {
 			// Close runtime and cache if WASI fails
 			_ = runtime.Close(ctx)
 			if a.wasmCache != nil {
-				_ = a.wasmCache.Close(ctx) // Use Close(ctx)
+				_ = a.wasmCache.Close(ctx)
 			}
 			return nil // Cannot proceed if WASI fails
 		}
-		log.Info(ctx, "Shared Wazero runtime and WASI initialized for MCP agent")
+		log.Info(ctx, "Shared Wazero runtime, WASI, and host functions initialized for MCP agent")
 	}
 
 	log.Info("MCP Agent created, server will be started on first request", "serverPath", McpServerPath)
@@ -133,9 +144,10 @@ func (a *MCPAgent) cleanup() {
 	// Clean up native process if it exists
 	if a.cmd != nil && a.cmd.Process != nil {
 		log.Debug(context.Background(), "Killing native MCP process", "pid", a.cmd.Process.Pid)
-		if err := a.cmd.Process.Kill(); err != nil {
+		if err := a.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			log.Error(context.Background(), "Failed to kill native process", "pid", a.cmd.Process.Pid, "error", err)
 		}
+		// Wait might return an error if already killed/exited, ignore it.
 		_ = a.cmd.Wait()
 		a.cmd = nil
 	}
@@ -144,7 +156,10 @@ func (a *MCPAgent) cleanup() {
 		log.Debug(context.Background(), "Closing WASM module instance")
 		ctxClose, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if err := a.wasmModule.Close(ctxClose); err != nil {
-			log.Error(context.Background(), "Failed to close WASM module instance", "error", err)
+			// Ignore context deadline exceeded as it means close was successful but slow
+			if !errors.Is(err, context.DeadlineExceeded) {
+				log.Error(context.Background(), "Failed to close WASM module instance", "error", err)
+			}
 		}
 		cancel()
 		a.wasmModule = nil
@@ -152,7 +167,10 @@ func (a *MCPAgent) cleanup() {
 	// Clean up compiled module ref for this instance
 	if a.wasmCompiled != nil {
 		log.Debug(context.Background(), "Closing compiled WASM module ref")
-		_ = a.wasmCompiled.Close(context.Background())
+		// Use background context, Close should be quick
+		if err := a.wasmCompiled.Close(context.Background()); err != nil {
+			log.Error(context.Background(), "Failed to close compiled WASM module ref", "error", err)
+		}
 		a.wasmCompiled = nil
 	}
 
@@ -207,15 +225,13 @@ func (a *MCPAgent) ensureClientInitialized(ctx context.Context) (err error) {
 			hostStdinWriter, hostStdoutReader, mod, compiled, startErr = a.startWasmModule(ctx)
 			if startErr == nil {
 				a.wasmModule = mod
-				// wasmRuntime is already set
 				a.wasmCompiled = compiled // Store compiled ref for cleanup
 			} else {
 				// Ensure potential partial resources from startWasmModule are closed on error
+				// startWasmModule's deferred cleanup should handle pipes and compiled module.
+				// Mod instance might need closing if instantiation partially succeeded before erroring.
 				if mod != nil {
 					_ = mod.Close(ctx)
-				}
-				if compiled != nil {
-					_ = compiled.Close(ctx)
 				}
 				// Do not close shared runtime here
 			}
@@ -231,7 +247,7 @@ func (a *MCPAgent) ensureClientInitialized(ctx context.Context) (err error) {
 
 	if startErr != nil {
 		log.Error(ctx, "Failed to start MCP server process/module", "isWasm", isWasm, "error", startErr)
-		// Ensure pipes are closed if start failed
+		// Ensure pipes are closed if start failed (start functions might have deferred closes, but belt-and-suspenders)
 		if hostStdinWriter != nil {
 			_ = hostStdinWriter.Close()
 		}
@@ -242,19 +258,24 @@ func (a *MCPAgent) ensureClientInitialized(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to start MCP server: %w", startErr)
 	}
 
-	// --- Initialize MCP client ---
+	// --- Initialize MCP client --- (Ensure stdio transport import)
 	transport := stdio.NewStdioServerTransportWithIO(hostStdoutReader, hostStdinWriter)
 	clientImpl := mcp.NewClient(transport)
 
 	initCtx, cancel := context.WithTimeout(context.Background(), initializationTimeout)
 	defer cancel()
-	if _, err = clientImpl.Initialize(initCtx); err != nil {
-		err = fmt.Errorf("failed to initialize MCP client: %w", err)
+	if _, initErr := clientImpl.Initialize(initCtx); initErr != nil {
+		err = fmt.Errorf("failed to initialize MCP client: %w", initErr)
 		log.Error(ctx, "MCP client initialization failed after process/module start", "isWasm", isWasm, "error", err)
 		// Cleanup the newly started process/module and pipes as init failed
-		a.cleanup()
-		_ = hostStdinWriter.Close()
-		_ = hostStdoutReader.Close()
+		a.cleanup() // This should handle cmd/wasmModule
+		// Close the pipes directly as cleanup() doesn't know about them
+		if hostStdinWriter != nil {
+			_ = hostStdinWriter.Close()
+		}
+		if hostStdoutReader != nil {
+			_ = hostStdoutReader.Close()
+		}
 		return err // defer mu.Unlock() will run
 	}
 
@@ -268,52 +289,7 @@ func (a *MCPAgent) ensureClientInitialized(ctx context.Context) (err error) {
 	return nil // Success
 }
 
-// startNativeProcess starts the MCP server as a native executable.
-func (a *MCPAgent) startNativeProcess(ctx context.Context) (stdin io.WriteCloser, stdout io.ReadCloser, cmd *exec.Cmd, err error) {
-	log.Debug(ctx, "Starting native MCP server process", "path", McpServerPath)
-	cmd = exec.CommandContext(context.Background(), McpServerPath)
-
-	stdin, err = cmd.StdinPipe()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("native stdin pipe: %w", err)
-	}
-
-	stdout, err = cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, nil, nil, fmt.Errorf("native stdout pipe: %w", err)
-	}
-
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-
-	if err = cmd.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		return nil, nil, nil, fmt.Errorf("native start: %w", err)
-	}
-
-	currentPid := cmd.Process.Pid
-	log.Info(ctx, "Native MCP server process started", "pid", currentPid)
-
-	// Start monitoring goroutine
-	go func(processCmd *exec.Cmd, processStderr *strings.Builder, processPid int) {
-		waitErr := processCmd.Wait() // Wait for the process to exit
-		a.mu.Lock()
-		log.Warn("Native MCP server process exited", "pid", processPid, "error", waitErr, "stderr", processStderr.String())
-		// Check if the cmd matches the one we are monitoring before cleaning up
-		if a.cmd == processCmd {
-			a.cleanup() // Use the central cleanup function
-			log.Info("MCP agent state cleaned up after native process exit", "pid", processPid)
-		} else {
-			log.Debug("Native MCP agent process exited, but state already updated or cmd mismatch", "exitedPid", processPid)
-		}
-		a.mu.Unlock()
-	}(cmd, &stderr, currentPid)
-
-	// Return the pipes connected to the process and the Cmd object
-	return stdin, stdout, cmd, nil
-}
+// startNativeProcess was moved to mcp_process_native.go
 
 // startWasmModule loads and starts the MCP server as a WASM module using the agent's shared Wazero runtime.
 func (a *MCPAgent) startWasmModule(ctx context.Context) (hostStdinWriter io.WriteCloser, hostStdoutReader io.ReadCloser, mod api.Module, compiled api.Closer, err error) {
@@ -328,15 +304,34 @@ func (a *MCPAgent) startWasmModule(ctx context.Context) (hostStdinWriter io.Writ
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("wasm stdin pipe: %w", err)
 	}
+	// Defer close pipes on error exit
+	defer func() {
+		if err != nil {
+			_ = wasmStdinReader.Close()
+			_ = hostStdinWriter.Close()
+			// hostStdoutReader and wasmStdoutWriter handled below
+		}
+	}()
+
 	hostStdoutReader, wasmStdoutWriter, err := os.Pipe()
 	if err != nil {
-		_ = wasmStdinReader.Close()
-		_ = hostStdinWriter.Close()
+		_ = wasmStdinReader.Close() // Close previous pipe
+		_ = hostStdinWriter.Close() // Close previous pipe
 		return nil, nil, nil, nil, fmt.Errorf("wasm stdout pipe: %w", err)
 	}
+	// Defer close pipes on error exit
+	defer func() {
+		if err != nil {
+			_ = hostStdoutReader.Close()
+			_ = wasmStdoutWriter.Close()
+		}
+	}()
 
 	// Use the SHARDED runtime from the agent struct
-	runtime := a.wasmRuntime.(wazero.Runtime) // Type assert to get underlying Runtime
+	runtime, ok := a.wasmRuntime.(wazero.Runtime)
+	if !ok || runtime == nil {
+		return nil, nil, nil, nil, errors.New("wasmRuntime is not initialized or not a wazero.Runtime")
+	}
 	// WASI is already instantiated on the shared runtime
 
 	config := wazero.NewModuleConfig().
@@ -353,16 +348,13 @@ func (a *MCPAgent) startWasmModule(ctx context.Context) (hostStdinWriter io.Writ
 	// Compile module using the shared runtime (which uses the configured cache)
 	compiledModule, err := runtime.CompileModule(ctx, wasmBytes)
 	if err != nil {
-		_ = wasmStdinReader.Close()
-		_ = hostStdinWriter.Close()
-		_ = hostStdoutReader.Close()
-		_ = wasmStdoutWriter.Close()
 		return nil, nil, nil, nil, fmt.Errorf("compile wasm module: %w", err)
 	}
 	// Defer closing compiled module in case of errors later in this function.
-	shouldCloseOnError := true
+	// Caller (ensureClientInitialized) is responsible for closing on success.
+	shouldCloseCompiledOnError := true
 	defer func() {
-		if shouldCloseOnError && compiledModule != nil {
+		if shouldCloseCompiledOnError && compiledModule != nil {
 			_ = compiledModule.Close(context.Background())
 		}
 	}()
@@ -372,6 +364,7 @@ func (a *MCPAgent) startWasmModule(ctx context.Context) (hostStdinWriter io.Writ
 	instanceErrChan := make(chan error, 1)
 	go func() {
 		var instantiateErr error
+		// Use context.Background() for the module's main execution context
 		instance, instantiateErr = runtime.InstantiateModule(context.Background(), compiledModule, config)
 		instanceErrChan <- instantiateErr
 	}()
@@ -381,33 +374,36 @@ func (a *MCPAgent) startWasmModule(ctx context.Context) (hostStdinWriter io.Writ
 	case instantiateErr := <-instanceErrChan:
 		if instantiateErr != nil {
 			log.Error(ctx, "Failed to instantiate WASM module", "error", instantiateErr)
-			_ = wasmStdinReader.Close()
-			_ = hostStdinWriter.Close()
-			_ = hostStdoutReader.Close()
-			_ = wasmStdoutWriter.Close()
 			// compiledModule closed by defer
+			// pipes closed by defer
 			return nil, nil, nil, nil, fmt.Errorf("instantiate wasm module: %w", instantiateErr)
 		}
-		log.Warn(ctx, "WASM module instantiation returned (exited?) unexpectedly quickly.")
+		// If instantiateErr is nil here, the module exited immediately without error. Log it.
+		log.Warn(ctx, "WASM module instantiation returned (exited?) immediately without error.")
+		// Proceed to start monitoring, but return the (already closed) instance
+		// Pipes will be closed by the successful return path.
 	case <-time.After(2 * time.Second):
 		log.Debug(ctx, "WASM module instantiation likely blocking (server running), proceeding...")
 	}
 
 	// Start a monitoring goroutine for WASM module exit/error
 	go func(modToMonitor api.Module, compiledToClose api.Closer, errChan chan error) {
+		// This will block until the instance created by InstantiateModule exits or errors.
 		instantiateErr := <-errChan
 
 		a.mu.Lock()
 		log.Warn("WASM module exited/errored", "error", instantiateErr)
 		// Check if the module currently stored in the agent is the one we were monitoring.
-		// Compare module instance directly. Instance might be nil if instantiation failed.
-		if a.wasmModule != nil && a.wasmModule == modToMonitor {
+		// Use the central cleanup which handles nil checks.
+		if a.wasmModule == modToMonitor {
 			a.cleanup() // This will close the module instance and compiled ref
 			log.Info("MCP agent state cleaned up after WASM module exit/error")
 		} else {
-			log.Debug("WASM module exited, but state already updated or module mismatch")
+			// This case can happen if cleanup was called manually or if a new instance
+			// was started before the old one finished exiting.
+			log.Debug("WASM module exited, but state already updated or module mismatch. Explicitly closing compiled ref if needed.")
 			// Manually close the compiled module ref associated with this specific instance
-			// as cleanup() won't if a.wasmModule doesn't match.
+			// as cleanup() won't if a.wasmModule doesn't match or is nil.
 			if compiledToClose != nil {
 				_ = compiledToClose.Close(context.Background())
 			}
@@ -415,8 +411,8 @@ func (a *MCPAgent) startWasmModule(ctx context.Context) (hostStdinWriter io.Writ
 		a.mu.Unlock()
 	}(instance, compiledModule, instanceErrChan) // Pass necessary refs
 
-	// Success: prevent deferred cleanup, return resources needed by caller
-	shouldCloseOnError = false
+	// Success: prevent deferred cleanup of compiled module, return resources needed by caller
+	shouldCloseCompiledOnError = false
 	return hostStdinWriter, hostStdoutReader, instance, compiledModule, nil // Return instance and compiled module
 }
 
