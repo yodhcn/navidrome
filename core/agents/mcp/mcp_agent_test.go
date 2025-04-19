@@ -2,54 +2,188 @@ package mcp_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 
+	mcp_client "github.com/metoro-io/mcp-golang" // Renamed alias for clarity
 	"github.com/navidrome/navidrome/core/agents"
 	"github.com/navidrome/navidrome/core/agents/mcp"
-	"github.com/navidrome/navidrome/tests"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
+// mcpClient defines the interface for the MCP client methods used by the agent.
+// This allows mocking the client for testing.
+type mcpClient interface {
+	Initialize(ctx context.Context) (*mcp_client.InitializeResponse, error)
+	CallTool(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error)
+}
+
+// mockMCPClient is a mock implementation of mcpClient for testing.
+type mockMCPClient struct {
+	InitializeFunc func(ctx context.Context) (*mcp_client.InitializeResponse, error)
+	CallToolFunc   func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error)
+	callToolArgs   []any  // Store args for verification
+	callToolName   string // Store tool name for verification
+}
+
+func (m *mockMCPClient) Initialize(ctx context.Context) (*mcp_client.InitializeResponse, error) {
+	if m.InitializeFunc != nil {
+		return m.InitializeFunc(ctx)
+	}
+	return &mcp_client.InitializeResponse{}, nil // Default success
+}
+
+func (m *mockMCPClient) CallTool(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+	m.callToolName = toolName
+	m.callToolArgs = append(m.callToolArgs, args)
+	if m.CallToolFunc != nil {
+		return m.CallToolFunc(ctx, toolName, args)
+	}
+	return &mcp_client.ToolResponse{}, nil
+}
+
+// Ensure mock implements the interface (compile-time check)
+var _ mcpClient = (*mockMCPClient)(nil)
+
 var _ = Describe("MCPAgent", func() {
 	var (
-		ctx context.Context
-		// ds    model.DataStore // Not needed yet for PoC
-		agent agents.ArtistBiographyRetriever
+		ctx        context.Context
+		agent      *mcp.MCPAgent // Use concrete type from the package
+		mockClient *mockMCPClient
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		// Use ctx to avoid unused variable error
-		_ = ctx
-		ds := &tests.MockDataStore{}
-		// Use ds to avoid unused variable error
-		_ = ds
-		// Directly instantiate for now, assuming constructor logic is minimal for PoC
-		// In a real scenario, you might use the constructor or mock dependencies
+		mockClient = &mockMCPClient{
+			callToolArgs: make([]any, 0), // Reset args on each test
+		}
 
-		// The constructor is not exported, we need to access it differently or make it testable.
-		// For PoC, let's assume we can get an instance. We might need to adjust mcp_agent.go later
-		// For now, comment out the direct constructor call for simplicity in test setup phase.
-		// constructor := mcp.mcpConstructor // This won't work as it's unexported
-
-		// Placeholder: Create a simple MCPAgent instance directly for testing its existence.
-		// This bypasses the constructor logic (like the file check), which is fine for a basic test.
+		// Instantiate the real agent
 		agent = &mcp.MCPAgent{}
-
-		Expect(agent).NotTo(BeNil())
+		// Inject the mock client directly using the exported override field
+		agent.ClientOverride = mockClient
 	})
 
-	It("should be created", func() {
-		Expect(agent).NotTo(BeNil())
+	Describe("GetArtistBiography", func() {
+		It("should call the correct tool and return the biography", func() {
+			expectedBio := "This is the artist bio."
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				Expect(toolName).To(Equal(mcp.McpToolNameGetBio))
+				Expect(args).To(BeAssignableToTypeOf(mcp.GetArtistBiographyArgs{})) // Use exported type
+				typedArgs := args.(mcp.GetArtistBiographyArgs)                      // Use exported type
+				Expect(typedArgs.ID).To(Equal("id1"))
+				Expect(typedArgs.Name).To(Equal("Artist Name"))
+				Expect(typedArgs.Mbid).To(Equal("mbid1"))
+				return mcp_client.NewToolResponse(mcp_client.NewTextContent(expectedBio)), nil
+			}
+
+			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(bio).To(Equal(expectedBio))
+		})
+
+		It("should return error if CallTool fails", func() {
+			expectedErr := errors.New("mcp tool error")
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				return nil, expectedErr
+			}
+
+			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, expectedErr)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("failed to call MCP tool '%s'", mcp.McpToolNameGetBio)))
+			Expect(bio).To(BeEmpty())
+		})
+
+		It("should return ErrNotFound if CallTool response is empty", func() {
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				// Return a response created with no content parts
+				return mcp_client.NewToolResponse(), nil
+			}
+
+			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			Expect(err).To(MatchError(agents.ErrNotFound))
+			Expect(bio).To(BeEmpty())
+		})
+
+		It("should return ErrNotFound if CallTool response has nil TextContent (simulated by empty string)", func() {
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				// Simulate nil/empty text content by creating response with empty string text
+				return mcp_client.NewToolResponse(mcp_client.NewTextContent("")), nil
+			}
+
+			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			Expect(err).To(MatchError(agents.ErrNotFound))
+			Expect(bio).To(BeEmpty())
+		})
+
+		It("should return comm error if CallTool returns pipe error", func() {
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				return nil, io.ErrClosedPipe
+			}
+
+			bio, err := agent.GetArtistBiography(ctx, "id1", "Artist Name", "mbid1")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MCP agent process communication error"))
+			Expect(errors.Is(err, io.ErrClosedPipe)).To(BeTrue())
+			Expect(bio).To(BeEmpty())
+		})
 	})
 
-	// TODO: Add PoC test case that calls GetArtistBiography
-	// This will likely require the actual MCP server to be running
-	// or mocking the exec.Command part.
-	It("should call GetArtistBiography (placeholder)", func() {
-		// bio, err := agent.GetArtistBiography(ctx, "artist-id", "Artist Name", "mbid-123")
-		// Expect(err).ToNot(HaveOccurred())
-		// Expect(bio).ToNot(BeEmpty())
-		Skip("Skipping actual MCP call for initial PoC test setup")
+	Describe("GetArtistURL", func() {
+		It("should call the correct tool and return the URL", func() {
+			expectedURL := "http://example.com/artist"
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				Expect(toolName).To(Equal(mcp.McpToolNameGetURL))
+				Expect(args).To(BeAssignableToTypeOf(mcp.GetArtistURLArgs{})) // Use exported type
+				typedArgs := args.(mcp.GetArtistURLArgs)                      // Use exported type
+				Expect(typedArgs.ID).To(Equal("id2"))
+				Expect(typedArgs.Name).To(Equal("Another Artist"))
+				Expect(typedArgs.Mbid).To(Equal("mbid2"))
+				return mcp_client.NewToolResponse(mcp_client.NewTextContent(expectedURL)), nil
+			}
+
+			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(url).To(Equal(expectedURL))
+		})
+
+		It("should return error if CallTool fails", func() {
+			expectedErr := errors.New("mcp tool error url")
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				return nil, expectedErr
+			}
+
+			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, expectedErr)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("failed to call MCP tool '%s'", mcp.McpToolNameGetURL)))
+			Expect(url).To(BeEmpty())
+		})
+
+		It("should return ErrNotFound if CallTool response is empty", func() {
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				// Return a response created with no content parts
+				return mcp_client.NewToolResponse(), nil
+			}
+
+			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			Expect(err).To(MatchError(agents.ErrNotFound))
+			Expect(url).To(BeEmpty())
+		})
+
+		It("should return comm error if CallTool returns pipe error", func() {
+			mockClient.CallToolFunc = func(ctx context.Context, toolName string, args any) (*mcp_client.ToolResponse, error) {
+				return nil, fmt.Errorf("write: %w", io.ErrClosedPipe)
+			}
+
+			url, err := agent.GetArtistURL(ctx, "id2", "Another Artist", "mbid2")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MCP agent process communication error"))
+			Expect(errors.Is(err, io.ErrClosedPipe)).To(BeTrue())
+			Expect(url).To(BeEmpty())
+		})
 	})
 })
