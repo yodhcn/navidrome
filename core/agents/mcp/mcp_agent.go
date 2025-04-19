@@ -343,7 +343,11 @@ func (a *MCPAgent) startWasmModule(ctx context.Context) (hostStdinWriter io.Writ
 		WithStdin(wasmStdinReader).
 		WithStdout(wasmStdoutWriter).
 		WithStderr(os.Stderr).
-		WithArgs(McpServerPath)
+		WithArgs(McpServerPath).
+		// Grant access to the host filesystem. Needed for DNS lookup (/etc/resolv.conf)
+		// and potentially other operations depending on the module.
+		// SECURITY: This grants broad access; consider more restricted FS if needed.
+		WithFS(os.DirFS("/"))
 
 	log.Debug(ctx, "Compiling WASM module (using cache if enabled)...")
 	// Compile module using the shared runtime (which uses the configured cache)
