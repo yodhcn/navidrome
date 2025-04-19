@@ -24,6 +24,7 @@ const (
 	McpAgentName          = "mcp"
 	initializationTimeout = 5 * time.Second
 	// McpServerPath defines the location of the MCP server executable or WASM module.
+	// McpServerPath     = "./core/agents/mcp/mcp-server/mcp-server"
 	McpServerPath     = "./core/agents/mcp/mcp-server/mcp-server.wasm"
 	McpToolNameGetBio = "get_artist_biography"
 	McpToolNameGetURL = "get_artist_url"

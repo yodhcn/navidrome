@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -197,12 +198,18 @@ func (n *MCPNative) startProcess_locked(ctx context.Context) (stdin io.WriteClos
 		return nil, nil, nil, fmt.Errorf("native stdout pipe: %w", err)
 	}
 
-	var stderrBuf strings.Builder
-	cmd.Stderr = &stderrBuf
+	// Get stderr pipe to stream logs
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdinPipe.Close()
+		_ = stdoutPipe.Close()
+		return nil, nil, nil, fmt.Errorf("native stderr pipe: %w", err)
+	}
 
 	if err = cmd.Start(); err != nil {
 		_ = stdinPipe.Close()
 		_ = stdoutPipe.Close()
+		// stderrPipe gets closed implicitly if cmd.Start() fails
 		return nil, nil, nil, fmt.Errorf("native start: %w", err)
 	}
 
@@ -210,12 +217,24 @@ func (n *MCPNative) startProcess_locked(ctx context.Context) (stdin io.WriteClos
 	currentCmd := cmd // Capture the current cmd pointer for the goroutine
 	log.Info(ctx, "Native MCP server process started", "pid", currentPid)
 
-	// Start monitoring goroutine
+	// Start monitoring goroutine for process exit
 	go func() {
+		// Start separate goroutine to stream stderr
+		go func() {
+			scanner := bufio.NewScanner(stderrPipe)
+			for scanner.Scan() {
+				log.Info("[MCP-SERVER] " + scanner.Text())
+			}
+			if err := scanner.Err(); err != nil {
+				log.Error("Error reading MCP server stderr", "pid", currentPid, "error", err)
+			}
+			log.Debug("MCP server stderr pipe closed", "pid", currentPid)
+		}()
+
 		waitErr := currentCmd.Wait() // Wait for the specific process this goroutine monitors
 		n.mu.Lock()
-		stderrStr := stderrBuf.String()
-		log.Warn("Native MCP server process exited", "pid", currentPid, "error", waitErr, "stderr", stderrStr)
+		// Stderr is now streamed, so we don't capture it here anymore.
+		log.Warn("Native MCP server process exited", "pid", currentPid, "error", waitErr)
 
 		// Critical: Check if the agent's current command is STILL the one we were monitoring.
 		// If it's different, it means cleanup/restart already happened, so we shouldn't cleanup again.
